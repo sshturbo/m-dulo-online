@@ -38,6 +38,11 @@ fi
 # URL passada como argumento
 url=$1
 
+
+# Instalar o supervisor
+
+apt install supervisor -y &>/dev/null
+
 # Diretório onde os arquivos serão baixados
 download_dir="/opt/myapp/online"
 

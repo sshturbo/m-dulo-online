@@ -61,8 +61,9 @@ echo "autorestart=true" >> "$download_dir/online.conf"
 echo "stderr_logfile=/var/log/online.err.log" >> "$download_dir/online.conf"
 echo "stdout_logfile=/var/log/online.out.log" >> "$download_dir/online.conf"
 
+sudo /usr/local/go/bin/go mod init online
 
-go build -o /opt/myapp/online/online /opt/myapp/online/online.go
+sudo /usr/local/go/bin/go build -o /opt/myapp/online/online /opt/myapp/online/online.go
 
 # Copiar o arquivo online.conf para /etc/supervisor/conf.d
 if [ -f "/opt/myapp/online/online.conf" ]; then

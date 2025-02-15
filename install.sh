@@ -1,33 +1,86 @@
 #!/bin/bash
 
-# Verifica se o script está sendo executado como root
-if [[ $EUID -ne 0 ]]; then
-    echo "Este script deve ser executado como root"
-    exit 1
-fi
+# ===============================
+# Configurações e Variáveis Globais
+# ===============================
+APP_DIR="/opt/myapp/online"
+DEPENDENCIES=("unzip")
+VERSION="1.0.0"
+FILE_URL="https://github.com/sshturbo/m-dulo-online/releases/download/$VERSION"
+ARCH=$(uname -m)
+SERVICE_FILE_NAME="online.service"
+SERVICE_FILE="/etc/systemd/system/online.service" 
 
-# Função para centralizar texto
+# Determinar arquitetura e nome do arquivo para download
+case $ARCH in
+x86_64)
+    FILE_NAME="online-amd64.zip"
+    DOCKER_ARCH="x86_64"
+    EXEC_BINARY="/opt/myapp/online/online-amd64"  
+    ;;
+aarch64)
+    FILE_NAME="online-arm64.zip"
+    DOCKER_ARCH="aarch64"
+    EXEC_BINARY="/opt/myapp/online/online-arm64"
+    ;;
+*)
+    echo "Arquitetura $ARCH não suportada."
+    exit 1
+    ;;
+esac
+
+# ===============================
+# Funções Utilitárias
+# ===============================
 print_centered() {
-    term_width=$(tput cols)
-    text="$1"
-    padding=$(( (term_width - ${#text}) / 2 ))
-    printf "%${padding}s" '' # Adiciona espaços antes do texto
-    echo "$text"
+    printf "\e[33m%s\e[0m\n" "$1"
 }
 
-# Função para simular uma barra de progresso
 progress_bar() {
     local total_steps=$1
-    local current_step=0
-
-    echo -n "Progresso: ["
-    while [ $current_step -lt $total_steps ]; do
+    for ((i = 0; i < total_steps; i++)); do
         echo -n "#"
-        ((current_step++))
         sleep 0.1
     done
-    echo "] Completo!"
+    echo " COMPLETO!"
 }
+
+run_with_spinner() {
+    local command="$1"
+    local message="$2"
+    echo -n "$message"
+    $command &>/tmp/command_output.log &
+    local pid=$!
+    while kill -0 $pid 2>/dev/null; do
+        echo -n "."
+        sleep 1
+    done
+    wait $pid
+    if [ $? -ne 0 ]; then
+        echo " ERRO!"
+        cat /tmp/command_output.log
+        exit 1
+    else
+        echo " FEITO!"
+    fi
+}
+
+install_if_missing() {
+    local package=$1
+    if ! command -v $package &>/dev/null; then
+        run_with_spinner "apt-get install -y $package" "INSTALANDO $package"
+    else
+        print_centered "$package JÁ ESTÁ INSTALADO."
+    fi
+}
+
+# ===============================
+# Validações Iniciais
+# ===============================
+if [[ $EUID -ne 0 ]]; then
+    echo "Este script deve ser executado como root."
+    exit 1
+fi
 
 # Verifica se a URL foi passada como argumento
 if [ $# -ne 1 ]; then
@@ -36,53 +89,60 @@ if [ $# -ne 1 ]; then
 fi
 
 # URL passada como argumento
-url=$1
+URL=$1
+
+# Instalar dependências
+for dep in "${DEPENDENCIES[@]}"; do
+    install_if_missing $dep
+done
 
 
-# Instalar o supervisor
-
-apt install supervisor -y &>/dev/null
-
-# Diretório onde os arquivos serão baixados
-download_dir="/opt/myapp/online"
-
-# Criar o diretório se não existir
-mkdir -p "$download_dir"
-
-# Baixar os arquivos online.go e online.conf
-wget -O "$download_dir/online.go" https://raw.githubusercontent.com/sshturbo/m-dulo-online/main/online.go &>/dev/null
-
-# Adicionar a URL ao arquivo online.conf
-echo "[program:Online]" >> "$download_dir/online.conf"
-echo "command=/opt/myapp/online/online $url" >> "$download_dir/online.conf"
-echo "directory=/opt/myapp/online" >> "$download_dir/online.conf"
-echo "autostart=true" >> "$download_dir/online.conf"
-echo "autorestart=true" >> "$download_dir/online.conf"
-echo "stderr_logfile=/var/log/online.err.log" >> "$download_dir/online.conf"
-echo "stdout_logfile=/var/log/online.out.log" >> "$download_dir/online.conf"
-
-sudo /usr/local/go/bin/go mod init online
-
-sudo /usr/local/go/bin/go build -o /opt/myapp/online/online /opt/myapp/online/online.go
-
-# Copiar o arquivo online.conf para /etc/supervisor/conf.d
-if [ -f "/opt/myapp/online/online.conf" ]; then
-    print_centered "Copiando online.conf para /etc/supervisor/conf.d..."
-    sudo cp /opt/myapp/online/online.conf /etc/supervisor/conf.d/
-    sudo chown root:root /etc/supervisor/conf.d/online.conf
-    sudo chmod 644 /etc/supervisor/conf.d/online.conf
-    print_centered "Arquivo copiado com sucesso."
+# ===============================
+# Configuração da Aplicação
+# ===============================
+# Configurar diretório da aplicação
+if [ -d "$APP_DIR" ]; then
+    print_centered "DIRETÓRIO $APP_DIR JÁ EXISTE. EXCLUINDO ANTIGO..."
+    if systemctl list-units --full -all | grep -Fq "$SERVICE_FILE_NAME"; then
+        run_with_spinner "systemctl stop $SERVICE_FILE_NAME" "PARANDO SERVIÇO"
+        run_with_spinner "systemctl disable $SERVICE_FILE_NAME" "DESABILITANDO SERVIÇO"
+    else
+        print_centered "SERVIÇO $SERVICE_FILE_NAME NÃO ENCONTRADO."
+    fi
+    run_with_spinner "rm -rf $APP_DIR" "EXCLUINDO DIRETÓRIO"
 else
-    print_centered "Arquivo online.conf não encontrado. Verifique se o arquivo existe no repositório."
+    print_centered "DIRETÓRIO $APP_DIR NÃO EXISTE. NADA A EXCLUIR."
+fi
+mkdir -p $APP_DIR
+
+# Baixar e configurar o módulo
+print_centered "BAIXANDO $FILE_NAME..."
+run_with_spinner "wget --timeout=30 -O $APP_DIR/$FILE_NAME $FILE_URL/$FILE_NAME" "BAIXANDO ARQUIVO"
+
+print_centered "EXTRAINDO ARQUIVOS..."
+run_with_spinner "unzip $APP_DIR/$FILE_NAME -d $APP_DIR" "EXTRAINDO ARQUIVOS"
+run_with_spinner "rm $APP_DIR/$FILE_NAME" "REMOVENDO ARQUIVO ZIP"
+progress_bar 5
+
+chmod -R 775 $APP_DIR
+
+# Configurar serviço systemd
+if [ -f "$APP_DIR/$SERVICE_FILE_NAME" ]; then
+    cp "$APP_DIR/$SERVICE_FILE_NAME" /etc/systemd/system/
+    chmod 644 $SERVICE_FILE
+    sed -i "s|^ExecStart=.*|ExecStart=$EXEC_BINARY $URL|" "$SERVICE_FILE"
+    if [ $? -ne 0 ]; then
+        echo "Erro ao atualizar o arquivo de serviço com a URL."
+        exit 1
+    fi
+    systemctl daemon-reload
+    systemctl enable $SERVICE_FILE_NAME
+    systemctl start $SERVICE_FILE_NAME
+    print_centered "SERVIÇO $SERVICE_FILE_NAME CONFIGURADO E INICIADO COM SUCESSO!"
+else
+    print_centered "Erro: Arquivo de serviço não encontrado."
+    exit 1
 fi
 
-# Atualizar a configuração do Supervisor
-sudo supervisorctl update &>/dev/null
-
-# Iniciar o serviço
-print_centered "Iniciando o modulos do painel..."
-sudo supervisorctl start Online &>/dev/null
-
 progress_bar 10
-
-print_centered "Modulos do Online instalado com sucesso!"
+print_centered "MÓDULO INSTALADO E CONFIGURADO COM SUCESSO!"
